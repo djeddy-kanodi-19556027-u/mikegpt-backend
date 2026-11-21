@@ -29,8 +29,8 @@ app.use(express.static(path.join(__dirname, 'public')));   // the website (only 
 const API_KEY = (process.env.GEMINI_API_KEY || '').trim();
 const ai = new GoogleGenAI({ apiKey: API_KEY });
 
-const CHAT_MODELS = [...new Set([(process.env.GEMINI_MODEL || '').trim(), 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'].filter(Boolean))];
-const IMAGE_MODELS = [...new Set([(process.env.GEMINI_IMAGE_MODEL || '').trim(), 'gemini-3.1-flash-image', 'gemini-nano-banana-2.1', 'gemini-3.1-flash-lite-image', 'gemini-2.5-flash-image'].filter(Boolean))];
+const CHAT_MODELS = [...new Set([(process.env.GEMINI_MODEL || '').trim(), 'gemini-3.8-flash','gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'].filter(Boolean))];
+const IMAGE_MODELS = [...new Set([(process.env.GEMINI_IMAGE_MODEL || '').trim(), 'gemini-3.8-flash','gemini-3.1-flash-image', 'gemini-nano-banana-2.1', 'gemini-3.8-flash-lite-image', 'gemini-3.1-flash-lite-image', 'gemini-2.5-flash-image'].filter(Boolean))];
 let workingModel = null;
 let workingImageModel = null;
 
