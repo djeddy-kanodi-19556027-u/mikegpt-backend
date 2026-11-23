@@ -18,7 +18,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const { processFiles } = require('./files');
+const { processFiles } = require('./file');
 
 // never let one bad request stop the whole server
 process.on('uncaughtException', (e) => console.error('Unexpected error (server kept running):', e));
