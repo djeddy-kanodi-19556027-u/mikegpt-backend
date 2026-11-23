@@ -1,10 +1,10 @@
 /* =====================================================
-   files.js: turns uploaded files into something Gemini can read.
+   files.js: turns uploaded files into something the AI can read.
    No extra npm package needed (it has its own small zip reader).
 
-   Gemini reads natively : images, PDF, video, audio
-   We convert to text    : txt/md/csv/json/code, Word (.docx), Excel (.xlsx),
-                           PowerPoint (.pptx), OpenDocument (.odt), and ZIP archives
+   Sent to the AI as they are : images, PDF, video, audio
+   We convert to text first   : txt/md/csv/json/code, Word (.docx), Excel (.xlsx),
+                                PowerPoint (.pptx), OpenDocument (.odt), and ZIP archives
    ===================================================== */
 const zlib = require('zlib');
 
@@ -12,6 +12,7 @@ const MAX_TEXT_PER_FILE = 150000;     // characters kept from one document
 const MAX_TEXT_TOTAL = 400000;        // characters kept from everything sent in one message
 const MAX_ZIP_ENTRIES = 60;
 const MAX_ZIP_ENTRY_BYTES = 8 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 15 * 1024 * 1024;   // video / audio sent inside the request: keep it reasonable
 
 const TEXT_EXT = new Set(('txt md markdown csv tsv json xml html htm css js mjs cjs ts tsx jsx py java c cpp h hpp cs go rs php rb sql sh bat ps1 yml yaml ini log toml svg env gitignore vue swift kt dart r lua pl').split(' '));
 const IMAGE_MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif' };
@@ -131,21 +132,8 @@ function odtText(entries) {
   return stripTags(xml.replace(/<\/text:(p|h)>/g, '\n')).replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/* ---------- Gemini Files API (for video / audio) ---------- */
-async function uploadMedia(ai, buf, mime, name) {
-  let f = await ai.files.upload({ file: new Blob([buf], { type: mime }), config: { mimeType: mime, displayName: name } });
-  const t0 = Date.now();
-  while (f.state && String(f.state) !== 'ACTIVE') {
-    if (String(f.state) === 'FAILED') throw new Error('Google could not process this media file.');
-    if (Date.now() - t0 > 180000) throw new Error('The media file took too long to process.');
-    await new Promise((r) => setTimeout(r, 2000));
-    f = await ai.files.get({ name: f.name });
-  }
-  return { fileData: { fileUri: f.uri, mimeType: f.mimeType || mime } };
-}
-
-/* ---------- one file -> Gemini parts ---------- */
-async function processOne(ai, file, ctx) {
+/* ---------- one file -> parts ({ text } or { inlineData }) ---------- */
+async function processOne(file, ctx) {
   const { name, buf } = file;
   const ext = extOf(name);
   const parts = [];
@@ -167,10 +155,13 @@ async function processOne(ai, file, ctx) {
       parts.push({ text: `[Image: ${name}]` }, { inlineData: { mimeType: IMAGE_MIME[ext], data: buf.toString('base64') } });
     } else if (ext === 'pdf') {
       ctx.bytes += buf.length;
-      parts.push({ text: `[PDF: ${name}]` }, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') } });
+      parts.push({ text: `[PDF: ${name}]` }, { inlineData: { mimeType: 'application/pdf', data: buf.toString('base64') }, filename: name });
     } else if (MEDIA_MIME[ext]) {
       if (ctx.depth > 0) { ctx.notes.push(`${name}: video/audio inside a ZIP is not read.`); return parts; }
-      parts.push({ text: `[${MEDIA_MIME[ext].split('/')[0] === 'video' ? 'Video' : 'Audio'}: ${name}]` }, await uploadMedia(ai, buf, MEDIA_MIME[ext], name));
+      if (buf.length > MAX_MEDIA_BYTES) { ctx.notes.push(`${name}: too big (max ${MAX_MEDIA_BYTES / 1024 / 1024} MB for video/audio). Send a shorter or smaller file.`); return parts; }
+      const kind = MEDIA_MIME[ext].split('/')[0];
+      parts.push({ text: `[${kind === 'video' ? 'Video' : 'Audio'}: ${name}]` },
+                 { inlineData: { mimeType: MEDIA_MIME[ext], data: buf.toString('base64') }, big: true, ext });
     } else if (TEXT_EXT.has(ext)) {
       textPart('File', buf.toString('utf8'));
     } else if (ext === 'docx') {
@@ -195,7 +186,7 @@ async function processOne(ai, file, ctx) {
         if (/(^|\/)(node_modules|\.git|__MACOSX)\//.test(e.name) || /(^|\/)package-lock\.json$/.test(e.name)) continue;
         opened++;
         try {
-          parts.push(...await processOne(ai, { name: `${name}/${e.name}`, buf: e.read() }, { ...ctx, depth: ctx.depth + 1, get textLeft() { return ctx.textLeft; }, set textLeft(v) { ctx.textLeft = v; } }));
+          parts.push(...await processOne({ name: `${name}/${e.name}`, buf: e.read() }, { ...ctx, depth: ctx.depth + 1, get textLeft() { return ctx.textLeft; }, set textLeft(v) { ctx.textLeft = v; } }));
         } catch (err) { ctx.notes.push(`${e.name}: ${err.message}`); }
       }
     } else {
@@ -208,12 +199,12 @@ async function processOne(ai, file, ctx) {
 }
 
 /* files = [{ name, mime, data(base64) }]  ->  { parts, notes, bytes } */
-async function processFiles(ai, files) {
+async function processFiles(files) {
   const ctx = { notes: [], textLeft: MAX_TEXT_TOTAL, imagesLeft: 12, bytes: 0, depth: 0 };
   const parts = [];
   for (const f of Array.isArray(files) ? files : []) {
     if (!f || !f.name || !f.data) continue;
-    parts.push(...await processOne(ai, { name: String(f.name), buf: Buffer.from(f.data, 'base64') }, ctx));
+    parts.push(...await processOne({ name: String(f.name), buf: Buffer.from(f.data, 'base64') }, ctx));
   }
   if (ctx.notes.length) parts.push({ text: '[Notes about the attached files: ' + ctx.notes.join(' | ') + ']' });
   return { parts, notes: ctx.notes, bytes: ctx.bytes };
